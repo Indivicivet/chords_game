@@ -9,8 +9,8 @@ export const PLAYER_PALETTES = [
     hex: "#8b3dff",
     uiBg: "rgba(139, 61, 255, 0.22)",
     stringColor: 0x9247ff,
-    waterShallow: 0xb983ff,
-    waterDeep: 0x3b0f7a,
+    waterShallow: 0xc296ff,
+    waterDeep: 0x7628eb,
   },
   {
     id: 1,
@@ -18,8 +18,8 @@ export const PLAYER_PALETTES = [
     hex: "#f5c52b",
     uiBg: "rgba(245, 197, 43, 0.22)",
     stringColor: 0xf4c430,
-    waterShallow: 0xfff07a,
-    waterDeep: 0xd49600,
+    waterShallow: 0xfff38a,
+    waterDeep: 0xeab618,
   },
   {
     id: 2,
@@ -27,8 +27,8 @@ export const PLAYER_PALETTES = [
     hex: "#38bdf8",
     uiBg: "rgba(56, 189, 248, 0.22)",
     stringColor: 0x38bdf8,
-    waterShallow: 0x8be0ff,
-    waterDeep: 0x0369a1,
+    waterShallow: 0x9be7ff,
+    waterDeep: 0x22a6e8,
   },
   {
     id: 3,
@@ -36,8 +36,8 @@ export const PLAYER_PALETTES = [
     hex: "#e84a5f",
     uiBg: "rgba(232, 74, 95, 0.22)",
     stringColor: 0xe84a5f,
-    waterShallow: 0xff8a99,
-    waterDeep: 0x881337,
+    waterShallow: 0xff9aa7,
+    waterDeep: 0xd9364d,
   },
 ];
 

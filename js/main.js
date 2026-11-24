@@ -136,35 +136,44 @@ function renderSetupSeats() {
   seatListEl.innerHTML = "";
   PLAYER_PALETTES.forEach((pal, idx) => {
     const row = document.createElement("div");
-    row.className = "seat-row";
+    const isOff = seatConfigs[idx].type === "none";
+    row.className = `seat-row${isOff ? " disabled" : ""}`;
+    row.style.setProperty("--seat-color", pal.hex);
 
     const label = document.createElement("div");
     label.className = "seat-label";
-    label.innerHTML = `<span class="color-dot" style="background:${pal.hex};color:${pal.hex}"></span><span>Player ${idx + 1} — ${pal.name}</span>`;
+    label.innerHTML = `<span class="color-dot" style="background:${pal.hex};color:${pal.hex}"></span><span>${pal.name}</span>`;
 
-    const select = document.createElement("select");
-    select.className = "seat-select";
+    const segGroup = document.createElement("div");
+    segGroup.className = "seg-group";
+    segGroup.setAttribute("role", "radiogroup");
+    segGroup.setAttribute("aria-label", pal.name);
+
     const options = [
       { value: "human", label: "Human" },
-      { value: "ai-tactical", label: "Bot (Tactical)" },
-      { value: "ai-casual", label: "Bot (Casual)" },
+      { value: "ai-tactical", label: "Tactical Bot" },
+      { value: "ai-casual", label: "Casual Bot" },
     ];
     if (idx >= 2) {
       options.push({ value: "none", label: "None" });
     }
+
     for (const opt of options) {
-      const o = document.createElement("option");
-      o.value = opt.value;
-      o.textContent = opt.label;
-      if (seatConfigs[idx].type === opt.value) o.selected = true;
-      select.appendChild(o);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      const active = seatConfigs[idx].type === opt.value;
+      btn.className = `seg-btn${active ? " active" : ""}`;
+      btn.setAttribute("aria-checked", active ? "true" : "false");
+      btn.textContent = opt.label;
+      btn.addEventListener("click", () => {
+        seatConfigs[idx].type = opt.value;
+        renderSetupSeats();
+      });
+      segGroup.appendChild(btn);
     }
-    select.addEventListener("change", () => {
-      seatConfigs[idx].type = select.value;
-    });
 
     row.appendChild(label);
-    row.appendChild(select);
+    row.appendChild(segGroup);
     seatListEl.appendChild(row);
   });
 }

@@ -31,11 +31,11 @@ const WATER_FRAGMENT_SHADER = /* glsl */ `
 
   varying vec3 vWorldPos;
 
-  float decodeH(vec2 texel) {
+  vec2 decodeSample(vec2 texel) {
     vec2 clamped = clamp(texel, vec2(0.5), vec2(uGridSize - 0.5));
     vec4 s = texture2D(uWaveTex, clamped / uGridSize);
     float v16 = (s.r * 255.0 * 256.0 + s.g * 255.0) / 65535.0;
-    return (v16 * 2.0 - 1.0);
+    return vec2(v16 * 2.0 - 1.0, s.b);
   }
 
   float sampleHeightBilinear(vec2 worldXZ) {
@@ -43,16 +43,24 @@ const WATER_FRAGMENT_SHADER = /* glsl */ `
     vec2 f = uv * uGridSize - 0.5;
     vec2 i0 = floor(f);
     vec2 fr = f - i0;
-    float h00 = decodeH(i0 + vec2(0.5, 0.5));
-    float h10 = decodeH(i0 + vec2(1.5, 0.5));
-    float h01 = decodeH(i0 + vec2(0.5, 1.5));
-    float h11 = decodeH(i0 + vec2(1.5, 1.5));
-    return mix(mix(h00, h10, fr.x), mix(h01, h11, fr.x), fr.y);
+
+    vec2 s00 = decodeSample(i0 + vec2(0.5, 0.5));
+    vec2 s10 = decodeSample(i0 + vec2(1.5, 0.5));
+    vec2 s01 = decodeSample(i0 + vec2(0.5, 1.5));
+    vec2 s11 = decodeSample(i0 + vec2(1.5, 1.5));
+
+    float w00 = (1.0 - fr.x) * (1.0 - fr.y) * step(0.5, s00.y);
+    float w10 = fr.x * (1.0 - fr.y) * step(0.5, s10.y);
+    float w01 = (1.0 - fr.x) * fr.y * step(0.5, s01.y);
+    float w11 = fr.x * fr.y * step(0.5, s11.y);
+
+    float wSum = w00 + w10 + w01 + w11;
+    if (wSum < 1e-4) return 0.0;
+    return (s00.x * w00 + s10.x * w10 + s01.x * w01 + s11.x * w11) / wSum;
   }
 
   vec3 sampleSky(vec3 dir) {
     vec3 d = normalize(dir);
-    // Keep reflection mostly in sky hemisphere for crisp bright water look
     d.y = abs(d.y) * 0.85 + max(d.y, 0.0) * 0.15;
     float u = fract(atan(d.z, d.x) / 6.28318530718);
     float v = 1.0 - acos(clamp(d.y, -1.0, 1.0)) / 3.14159265359;
@@ -66,41 +74,92 @@ const WATER_FRAGMENT_SHADER = /* glsl */ `
     float hD = sampleHeightBilinear(vWorldPos.xz - vec2(0.0, eps));
     float hU = sampleHeightBilinear(vWorldPos.xz + vec2(0.0, eps));
 
-    // Subtle capillary wind shimmer so water stays gracefully alive
-    float cap1 = sin(vWorldPos.x * 1.9 + uTime * 2.3) * cos(vWorldPos.z * 2.1 - uTime * 1.8);
-    float cap2 = sin((vWorldPos.x + vWorldPos.z) * 2.7 - uTime * 2.9);
-    float dCapX = (cos(vWorldPos.x * 1.9 + uTime * 2.3) * cos(vWorldPos.z * 2.1 - uTime * 1.8) * 1.9
-                 + cos((vWorldPos.x + vWorldPos.z) * 2.7 - uTime * 2.9) * 2.7) * 0.028;
-    float dCapZ = (-sin(vWorldPos.x * 1.9 + uTime * 2.3) * sin(vWorldPos.z * 2.1 - uTime * 1.8) * 2.1
-                 + cos((vWorldPos.x + vWorldPos.z) * 2.7 - uTime * 2.9) * 2.7) * 0.028;
+    // Gentle, broad low-frequency breeze swell so settled water stays softly alive
+    float breeze = sin(vWorldPos.x * 0.36 + uTime * 1.15) * cos(vWorldPos.z * 0.42 - uTime * 0.9);
+    float dBreezeX = cos(vWorldPos.x * 0.36 + uTime * 1.15) * cos(vWorldPos.z * 0.42 - uTime * 0.9) * 0.36 * 0.018;
+    float dBreezeZ = -sin(vWorldPos.x * 0.36 + uTime * 1.15) * sin(vWorldPos.z * 0.42 - uTime * 0.9) * 0.42 * 0.018;
 
-    float waveGain = 2.6;
-    float dx = (hR - hL) * waveGain + dCapX;
-    float dz = (hU - hD) * waveGain + dCapZ;
+    float waveGain = 2.15;
+    float dx = (hR - hL) * waveGain + dBreezeX;
+    float dz = (hU - hD) * waveGain + dBreezeZ;
     vec3 N = normalize(vec3(-dx, 1.0, -dz));
 
     vec3 V = normalize(cameraPosition - vWorldPos);
     vec3 R = reflect(-V, N);
 
     vec3 skyRefl = sampleSky(R);
+    // Keep sky reflection luminance & clouds crisp without overpowering player hue
+    float skyLum = dot(skyRefl, vec3(0.299, 0.587, 0.114));
+    vec3 balancedSky = mix(vec3(skyLum), skyRefl, 0.38);
 
-    // Subtle stone caustic shimmer visible through shallower water
-    float caustic = 0.5 + 0.5 * (cap1 * 0.6 + cap2 * 0.4);
-    vec3 baseWater = mix(uShallowColor, uDeepColor, clamp(uFillProgress * 0.85, 0.0, 1.0));
-    baseWater += uShallowColor * caustic * (1.0 - uFillProgress * 0.55) * 0.14;
+    vec3 bodyColor = mix(uShallowColor, uDeepColor, clamp(uFillProgress * 0.72, 0.0, 1.0));
+    bodyColor += uShallowColor * (0.5 + 0.5 * breeze) * 0.08;
 
-    float fresnel = 0.08 + 0.88 * pow(1.0 - max(dot(N, V), 0.0), 3.6);
-    vec3 color = mix(baseWater, skyRefl * mix(vec3(1.0), uShallowColor, 0.25), fresnel);
+    float fresnel = 0.06 + 0.50 * pow(1.0 - max(dot(N, V), 0.0), 4.0);
+    vec3 reflTint = balancedSky * mix(vec3(1.0), uShallowColor * 1.15, 0.36);
+    vec3 color = mix(bodyColor, reflTint, fresnel);
 
-    // Crisp sun specular sparkles + broad glint
+    // Crisp sun specular sparkles + soft sheen
     vec3 L = normalize(uSunDir);
     vec3 H = normalize(L + V);
     float ndoth = max(dot(N, H), 0.0);
-    float specTight = pow(ndoth, 280.0) * 3.0;
-    float specMid = pow(ndoth, 42.0) * 0.34;
-    color += vec3(1.0, 0.97, 0.90) * (specTight + specMid);
+    float specTight = pow(ndoth, 240.0) * 2.6;
+    float specMid = pow(ndoth, 40.0) * 0.28;
+    color += vec3(1.0, 0.98, 0.93) * (specTight + specMid);
 
-    float alpha = mix(0.68, 0.90, clamp(uFillProgress, 0.0, 1.0));
+    float alpha = mix(0.70, 0.90, clamp(uFillProgress, 0.0, 1.0));
+    gl_FragColor = vec4(color, alpha);
+  }
+`;
+
+const WATERFALL_VERTEX_SHADER = /* glsl */ `
+  varying vec2 vUv;
+  varying vec3 vNormalW;
+  varying vec3 vWorldPos;
+  void main() {
+    vUv = uv;
+    vec4 worldPos = modelMatrix * vec4(position, 1.0);
+    vWorldPos = worldPos.xyz;
+    vNormalW = normalize(mat3(modelMatrix) * normal);
+    gl_Position = projectionMatrix * viewMatrix * worldPos;
+  }
+`;
+
+const WATERFALL_FRAGMENT_SHADER = /* glsl */ `
+  uniform vec3 uShallowColor;
+  uniform vec3 uDeepColor;
+  uniform vec3 uSunDir;
+  uniform float uTime;
+  uniform float uPourT;
+
+  varying vec2 vUv;
+  varying vec3 vNormalW;
+  varying vec3 vWorldPos;
+
+  void main() {
+    // vUv.x runs 0 (top spout) -> 1 (water impact) along TubeGeometry
+    float tAlong = vUv.x;
+    float flow = sin(tAlong * 26.0 - uTime * 16.0 + sin(vUv.y * 12.566) * 0.7) * 0.5 + 0.5;
+    float streaks = sin(vUv.y * 18.849 + tAlong * 8.0 - uTime * 11.0) * 0.5 + 0.5;
+
+    vec3 N = normalize(vNormalW);
+    vec3 V = normalize(cameraPosition - vWorldPos);
+    vec3 L = normalize(uSunDir);
+    vec3 H = normalize(L + V);
+
+    float fresnel = 0.2 + 0.75 * pow(1.0 - abs(dot(N, V)), 2.5);
+    float spec = pow(max(dot(N, H), 0.0), 80.0) * 1.4;
+    float foam = smoothstep(0.55, 0.98, flow * 0.65 + streaks * 0.45) * (0.28 + 0.45 * tAlong);
+
+    vec3 base = mix(uShallowColor, uDeepColor, 0.35);
+    vec3 color = mix(base, vec3(0.95, 0.98, 1.0), foam + fresnel * 0.32) + vec3(1.0) * spec;
+
+    // Fade softly at top spout origin and pinch cleanly near end of pour
+    float topFade = smoothstep(0.0, 0.26, tAlong);
+    float endFade = 1.0 - smoothstep(0.84, 1.0, uPourT);
+    float headReveal = smoothstep(0.0, 0.14, uPourT);
+    float alpha = topFade * endFade * headReveal * (0.68 + 0.22 * foam);
+
     gl_FragColor = vec4(color, alpha);
   }
 `;
@@ -115,6 +174,42 @@ function makeShapeFromPoly(pts) {
   return shape;
 }
 
+function buildWaterfallGeometry() {
+  // Graceful parabolic arc descending from (2.2, 8.2, 0.8) down to impact (0, 0, 0)
+  const pts = [];
+  const steps = 16;
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps; // 0 = top spout, 1 = impact
+    const x = 2.1 * Math.pow(1 - t, 1.45);
+    const z = 0.7 * Math.pow(1 - t, 1.45);
+    const y = 8.4 * (1 - t * t);
+    pts.push(new THREE.Vector3(x, y, z));
+  }
+  const curve = new THREE.CatmullRomCurve3(pts);
+  const geo = new THREE.TubeGeometry(curve, 20, 0.32, 12, false);
+
+  // Taper radius: slim at top spout, wider/fanned waterfall ribbon toward impact
+  const pos = geo.attributes.position;
+  const uv = geo.attributes.uv;
+  const centerTmp = new THREE.Vector3();
+  const vTmp = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    const t = Math.max(0, Math.min(1, uv.getX(i)));
+    curve.getPointAt(t, centerTmp);
+    vTmp.fromBufferAttribute(pos, i).sub(centerTmp);
+    const taper = 0.42 + 0.85 * t;
+    // Slightly flatten cross-section into a cascading ribbon
+    vTmp.x *= taper * 1.15;
+    vTmp.z *= taper * 0.78;
+    vTmp.y *= taper;
+    vTmp.add(centerTmp);
+    pos.setXYZ(i, vTmp.x, vTmp.y, vTmp.z);
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  return geo;
+}
+
 export function createWaterSystem(board, skyEquirectTex, sunDir) {
   const root = new THREE.Group();
   const nFaces = board.faces.length;
@@ -123,7 +218,6 @@ export function createWaterSystem(board, skyEquirectTex, sunDir) {
   const wellMask = new Int16Array(GRID_N * GRID_N).fill(-1);
   const wellPixels = Array.from({ length: nFaces }, () => []);
 
-  // Precompute bounding boxes for quick point-in-well lookup
   const faceBoxes = board.faces.map((f) => {
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     for (const p of f.innerPoly) {
@@ -154,7 +248,36 @@ export function createWaterSystem(board, skyEquirectTex, sunDir) {
     }
   }
 
-  // Also locate nearest pixel for each well centroid (for splash injection)
+  // Precompute 1-pixel 8-connected Neumann ghost ring per face so bilinear + central diff taps never hit cliffs
+  const wellGhostCells = Array.from({ length: nFaces }, () => []);
+  const seenGhost = new Map();
+  for (let fId = 0; fId < nFaces; fId++) {
+    seenGhost.clear();
+    for (const idx of wellPixels[fId]) {
+      const gx = idx % GRID_N;
+      const gz = (idx - gx) / GRID_N;
+      for (let dz = -1; dz <= 1; dz++) {
+        const nz = gz + dz;
+        if (nz < 0 || nz >= GRID_N) continue;
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dz === 0) continue;
+          const nx = gx + dx;
+          if (nx < 0 || nx >= GRID_N) continue;
+          const nb = nz * GRID_N + nx;
+          if (wellMask[nb] === -1) {
+            if (!seenGhost.has(nb)) {
+              seenGhost.set(nb, []);
+            }
+            seenGhost.get(nb).push(idx);
+          }
+        }
+      }
+    }
+    for (const [ghostIdx, interiorNbs] of seenGhost.entries()) {
+      wellGhostCells[fId].push({ ghostIdx, interiorNbs });
+    }
+  }
+
   const faceCentroidGrid = board.faces.map((f) => {
     const w = toWorldXZ(f.centroid);
     const gx = Math.max(1, Math.min(GRID_N - 2, Math.floor(((w.x + BOARD_SPAN * 0.5) / BOARD_SPAN) * GRID_N)));
@@ -162,11 +285,22 @@ export function createWaterSystem(board, skyEquirectTex, sunDir) {
     return { gx, gz, idx: gz * GRID_N + gx };
   });
 
-  // 2. Wave height buffers + RGBA8 16-bit encoded DataTexture
+  // 2. Wave height buffers + RGBA8 16-bit encoded DataTexture initialized to neutral 0.0 (32768 -> 128, 0)
   const hCur = new Float32Array(GRID_N * GRID_N);
   const hPrev = new Float32Array(GRID_N * GRID_N);
   const hNext = new Float32Array(GRID_N * GRID_N);
   const texData = new Uint8Array(GRID_N * GRID_N * 4);
+
+  function resetTexNeutral() {
+    for (let i = 0; i < GRID_N * GRID_N; i++) {
+      const tIdx = i * 4;
+      texData[tIdx] = 128;
+      texData[tIdx + 1] = 0;
+      texData[tIdx + 2] = 0;
+      texData[tIdx + 3] = 255;
+    }
+  }
+  resetTexNeutral();
 
   const waveTex = new THREE.DataTexture(
     texData,
@@ -181,15 +315,15 @@ export function createWaterSystem(board, skyEquirectTex, sunDir) {
   waveTex.wrapT = THREE.ClampToEdgeWrapping;
   waveTex.needsUpdate = true;
 
-  // 3. Per-well water meshes & pouring streams + droplets
-  const activeWells = new Map(); // faceId -> state
-  const pourStreams = new Map(); // faceId -> mesh
+  // 3. Per-well water meshes, curved waterfall streams, splash rings, and droplets
+  const activeWells = new Map();
+  const pourStreams = new Map(); // faceId -> { streamMesh, foamRing }
   const droplets = [];
 
-  const dropletGeo = new THREE.SphereGeometry(0.2, 8, 6);
-  const streamGeo = new THREE.CylinderGeometry(0.14, 0.34, 1.0, 14, 1, false);
-  // Shift cylinder so y=0 is bottom impact, y=1 is top spout
-  streamGeo.translate(0, 0.5, 0);
+  const dropletGeo = new THREE.SphereGeometry(0.16, 8, 6);
+  const waterfallGeo = buildWaterfallGeometry();
+  const foamRingGeo = new THREE.RingGeometry(0.22, 0.62, 24);
+  foamRingGeo.rotateX(-Math.PI / 2);
 
   let simTime = 0;
 
@@ -223,27 +357,46 @@ export function createWaterSystem(board, skyEquirectTex, sunDir) {
     return mesh;
   }
 
-  function createStreamMesh(face, palette) {
-    const mat = new THREE.MeshPhysicalMaterial({
-      color: palette.waterShallow,
-      emissive: palette.waterDeep,
-      emissiveIntensity: 0.18,
-      roughness: 0.05,
-      metalness: 0.12,
-      clearcoat: 1.0,
-      clearcoatRoughness: 0.04,
-      transparent: true,
-      opacity: 0.84,
-    });
-    const mesh = new THREE.Mesh(streamGeo, mat);
+  function createPourFX(face, palette) {
     const wPos = toWorldXZ(face.centroid);
-    mesh.position.set(wPos.x, WELL_FLOOR_Y, wPos.z);
-    mesh.visible = false;
-    root.add(mesh);
-    return mesh;
+
+    const streamMat = new THREE.ShaderMaterial({
+      vertexShader: WATERFALL_VERTEX_SHADER,
+      fragmentShader: WATERFALL_FRAGMENT_SHADER,
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      uniforms: {
+        uShallowColor: { value: new THREE.Color(palette.waterShallow) },
+        uDeepColor: { value: new THREE.Color(palette.waterDeep) },
+        uSunDir: { value: sunDir.clone().normalize() },
+        uTime: { value: 0 },
+        uPourT: { value: 0 },
+      },
+    });
+    const streamMesh = new THREE.Mesh(waterfallGeo, streamMat);
+    // Orient waterfall arc slightly toward the board center for natural visual balance
+    const yaw = Math.atan2(-wPos.x, -wPos.z) + 0.35;
+    streamMesh.position.set(wPos.x, WELL_FLOOR_Y, wPos.z);
+    streamMesh.rotation.y = yaw;
+    streamMesh.visible = false;
+    root.add(streamMesh);
+
+    const foamMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.0,
+      depthWrite: false,
+    });
+    const foamRing = new THREE.Mesh(foamRingGeo, foamMat);
+    foamRing.position.set(wPos.x, WELL_FLOOR_Y + 0.06, wPos.z);
+    foamRing.visible = false;
+    root.add(foamRing);
+
+    return { streamMesh, foamRing };
   }
 
-  function injectSplash(fId, strength, radiusCells = 2.5) {
+  function injectSplash(fId, strength, radiusCells = 2.6) {
     const c = faceCentroidGrid[fId];
     const rCeil = Math.ceil(radiusCells);
     for (let dz = -rCeil; dz <= rCeil; dz++) {
@@ -257,7 +410,7 @@ export function createWaterSystem(board, skyEquirectTex, sunDir) {
         const d = Math.hypot(dx, dz);
         if (d <= radiusCells) {
           const w = 0.5 * (1 + Math.cos((Math.PI * d) / radiusCells));
-          hCur[idx] = Math.max(-0.95, Math.min(0.95, hCur[idx] + strength * w));
+          hCur[idx] = Math.max(-0.85, Math.min(0.85, hCur[idx] + strength * w));
         }
       }
     }
@@ -267,25 +420,24 @@ export function createWaterSystem(board, skyEquirectTex, sunDir) {
     const face = board.faces[fId];
     const center = toWorldXZ(face.centroid);
     const ang = Math.random() * Math.PI * 2;
-    const speedR = 1.2 + Math.random() * 2.4;
+    const speedR = 0.9 + Math.random() * 1.8;
     const mat = new THREE.MeshBasicMaterial({
       color: palette.waterShallow,
       transparent: true,
-      opacity: 0.85,
+      opacity: 0.78,
     });
     const mesh = new THREE.Mesh(dropletGeo, mat);
     mesh.position.set(
-      center.x + Math.cos(ang) * 0.2,
-      waterY + 0.15,
-      center.z + Math.sin(ang) * 0.2
+      center.x + Math.cos(ang) * 0.25,
+      waterY + 0.12,
+      center.z + Math.sin(ang) * 0.25
     );
-    const s = 0.6 + Math.random() * 0.65;
-    mesh.scale.setScalar(s);
+    mesh.scale.setScalar(0.55 + Math.random() * 0.55);
     root.add(mesh);
     droplets.push({
       mesh,
       vx: Math.cos(ang) * speedR,
-      vy: 3.8 + Math.random() * 3.8,
+      vy: 2.8 + Math.random() * 2.6,
       vz: Math.sin(ang) * speedR,
       floorY: waterY,
       life: 0,
@@ -295,7 +447,6 @@ export function createWaterSystem(board, skyEquirectTex, sunDir) {
   function claimFaces(faceIds, palette, animate = true) {
     if (!faceIds || faceIds.length === 0) return;
 
-    // Sort faces radially from their average center for an organic cascade stagger
     const avg = faceIds.reduce(
       (acc, id) => {
         acc.x += board.faces[id].centroid.x;
@@ -317,8 +468,9 @@ export function createWaterSystem(board, skyEquirectTex, sunDir) {
       if (activeWells.has(fId)) return;
       const face = board.faces[fId];
       const mesh = createWellMesh(face, palette);
-      const stream = animate ? createStreamMesh(face, palette) : null;
-      if (stream) pourStreams.set(fId, stream);
+      if (animate) {
+        pourStreams.set(fId, createPourFX(face, palette));
+      }
 
       const startAt = animate ? simTime + idx * STAGGER_STEP : simTime - POUR_DURATION;
       activeWells.set(fId, {
@@ -330,14 +482,14 @@ export function createWaterSystem(board, skyEquirectTex, sunDir) {
         pouringStarted: !animate,
         pouringFinished: !animate,
         dropletTimer: 0,
-        ambientTimer: Math.random() * 1.5,
+        ambientTimer: 1.0 + Math.random() * 2.5,
       });
 
       if (!animate) {
         mesh.visible = true;
         mesh.position.y = WELL_FULL_Y;
         mesh.material.uniforms.uFillProgress.value = 1.0;
-        injectSplash(fId, 0.25, 2.5);
+        injectSplash(fId, 0.16, 2.8);
       }
     });
   }
@@ -350,9 +502,11 @@ export function createWaterSystem(board, skyEquirectTex, sunDir) {
     }
     activeWells.clear();
 
-    for (const s of pourStreams.values()) {
-      root.remove(s);
-      s.material.dispose();
+    for (const fx of pourStreams.values()) {
+      root.remove(fx.streamMesh);
+      fx.streamMesh.material.dispose();
+      root.remove(fx.foamRing);
+      fx.foamRing.material.dispose();
     }
     pourStreams.clear();
 
@@ -365,7 +519,7 @@ export function createWaterSystem(board, skyEquirectTex, sunDir) {
     hCur.fill(0);
     hPrev.fill(0);
     hNext.fill(0);
-    texData.fill(0);
+    resetTexNeutral();
     waveTex.needsUpdate = true;
   }
 
@@ -391,9 +545,21 @@ export function createWaterSystem(board, skyEquirectTex, sunDir) {
     return false;
   }
 
+  function packTexel(idx, heightVal) {
+    const norm = Math.max(0, Math.min(1, heightVal * 0.5 + 0.5));
+    const q = Math.round(norm * 65535);
+    const tIdx = idx * 4;
+    texData[tIdx] = (q >> 8) & 255;
+    texData[tIdx + 1] = q & 255;
+    texData[tIdx + 2] = 255;
+    texData[tIdx + 3] = 255;
+  }
+
   function stepWavePhysics() {
-    const c2 = 0.22; // wave speed squared (stable < 0.25)
-    const damping = 0.9968; // super gentle damping so ripples linger very long
+    const c2 = 0.2;
+    const scalarDamping = 0.989;
+    // Physical Navier-Stokes viscous term: damps high-frequency spatial waves ~ k^2
+    const viscosity = 0.085;
 
     for (const w of activeWells.values()) {
       if (!w.pouringStarted) continue;
@@ -402,37 +568,54 @@ export function createWaterSystem(board, skyEquirectTex, sunDir) {
       for (let k = 0; k < pixels.length; k++) {
         const idx = pixels[k];
         const hc = hCur[idx];
-        const hL = wellMask[idx - 1] === fId ? hCur[idx - 1] : hc;
-        const hR = wellMask[idx + 1] === fId ? hCur[idx + 1] : hc;
-        const hD = wellMask[idx - GRID_N] === fId ? hCur[idx - GRID_N] : hc;
-        const hU = wellMask[idx + GRID_N] === fId ? hCur[idx + GRID_N] : hc;
+        const hp = hPrev[idx];
+        const vc = hc - hp;
 
-        const lap = hL + hR + hD + hU - 4.0 * hc;
-        let next = (2.0 * hc - hPrev[idx] + c2 * lap) * damping;
-        if (next > 1.0) next = 1.0;
-        else if (next < -1.0) next = -1.0;
+        const iL = idx - 1;
+        const iR = idx + 1;
+        const iD = idx - GRID_N;
+        const iU = idx + GRID_N;
+
+        const hL = wellMask[iL] === fId ? hCur[iL] : hc;
+        const hR = wellMask[iR] === fId ? hCur[iR] : hc;
+        const hD = wellMask[iD] === fId ? hCur[iD] : hc;
+        const hU = wellMask[iU] === fId ? hCur[iU] : hc;
+
+        const vL = wellMask[iL] === fId ? hCur[iL] - hPrev[iL] : vc;
+        const vR = wellMask[iR] === fId ? hCur[iR] - hPrev[iR] : vc;
+        const vD = wellMask[iD] === fId ? hCur[iD] - hPrev[iD] : vc;
+        const vU = wellMask[iU] === fId ? hCur[iU] - hPrev[iU] : vc;
+
+        const lapH = hL + hR + hD + hU - 4.0 * hc;
+        const lapV = vL + vR + vD + vU - 4.0 * vc;
+
+        let next = hc + (vc * scalarDamping + c2 * lapH + viscosity * lapV);
+        if (next > 0.9) next = 0.9;
+        else if (next < -0.9) next = -0.9;
         hNext[idx] = next;
       }
     }
 
-    // Swap active pixels & pack 16-bit RGBA8 texture
     for (const w of activeWells.values()) {
       if (!w.pouringStarted) continue;
       const pixels = wellPixels[w.faceId];
       for (let k = 0; k < pixels.length; k++) {
         const idx = pixels[k];
-        const prev = hCur[idx];
         const cur = hNext[idx];
-        hPrev[idx] = prev;
+        hPrev[idx] = hCur[idx];
         hCur[idx] = cur;
+        packTexel(idx, cur);
+      }
 
-        const norm = Math.max(0, Math.min(1, cur * 0.5 + 0.5));
-        const q = Math.round(norm * 65535);
-        const tIdx = idx * 4;
-        texData[tIdx] = (q >> 8) & 255;
-        texData[tIdx + 1] = q & 255;
-        texData[tIdx + 2] = 255;
-        texData[tIdx + 3] = 255;
+      // Mirror boundary heights into 1-pixel Neumann ghost ring so bilinear taps have zero cliff
+      const ghosts = wellGhostCells[w.faceId];
+      for (let k = 0; k < ghosts.length; k++) {
+        const g = ghosts[k];
+        let sum = 0;
+        for (let j = 0; j < g.interiorNbs.length; j++) {
+          sum += hCur[g.interiorNbs[j]];
+        }
+        packTexel(g.ghostIdx, sum / g.interiorNbs.length);
       }
     }
     waveTex.needsUpdate = true;
@@ -452,12 +635,11 @@ export function createWaterSystem(board, skyEquirectTex, sunDir) {
       if (!w.pouringStarted) {
         w.pouringStarted = true;
         w.mesh.visible = true;
-        injectSplash(w.faceId, 0.55, 3.0);
+        injectSplash(w.faceId, 0.42, 3.0);
       }
 
       const elapsed = simTime - w.startAt;
       const rawT = Math.min(1, elapsed / POUR_DURATION);
-      // Smooth ease-out volume rise
       const easeFill = 1 - Math.pow(1 - rawT, 1.75);
       w.fillProgress = easeFill;
 
@@ -465,66 +647,66 @@ export function createWaterSystem(board, skyEquirectTex, sunDir) {
       w.mesh.position.y = waterY;
       w.mesh.material.uniforms.uFillProgress.value = easeFill;
 
-      const stream = pourStreams.get(w.faceId);
+      const fx = pourStreams.get(w.faceId);
       if (rawT < 1) {
-        // Turbulent pouring impulses & splash droplets
-        const pulse = Math.sin(simTime * 28.0 + w.faceId) * 0.22 + 0.14;
-        injectSplash(w.faceId, pulse * clampedDt * 24.0, 2.4);
+        // Broad smooth splash disturbance while pouring
+        const pulse = Math.sin(simTime * 15.0 + w.faceId) * 0.14 + 0.09;
+        injectSplash(w.faceId, pulse * clampedDt * 18.0, 2.8);
 
         w.dropletTimer += clampedDt;
-        if (w.dropletTimer > 0.09) {
+        if (w.dropletTimer > 0.11) {
           w.dropletTimer = 0;
           spawnDroplet(w.faceId, waterY, w.palette);
         }
 
-        if (stream) {
-          stream.visible = true;
-          const spoutTopY = 23.0;
-          const headDrop = Math.min(1, elapsed / 0.14);
-          const streamBottomY = spoutTopY * (1 - headDrop) + waterY * headDrop;
-          const streamLen = Math.max(0.1, spoutTopY - streamBottomY);
-          const pinch = rawT > 0.85 ? (1 - rawT) / 0.15 : 1.0;
-          const wobble = 1.0 + Math.sin(simTime * 34.0 + w.faceId) * 0.12;
-          stream.position.y = streamBottomY;
-          stream.scale.set(pinch * wobble, streamLen, pinch * wobble);
+        if (fx) {
+          fx.streamMesh.visible = true;
+          fx.streamMesh.position.y = waterY;
+          fx.streamMesh.material.uniforms.uTime.value = simTime;
+          fx.streamMesh.material.uniforms.uPourT.value = rawT;
+
+          fx.foamRing.visible = true;
+          fx.foamRing.position.y = waterY + 0.03;
+          const ringScale = 0.8 + ((simTime * 2.2 + w.faceId * 0.3) % 1.0) * 1.4;
+          fx.foamRing.scale.setScalar(ringScale);
+          fx.foamRing.material.opacity = (1 - Math.abs(ringScale - 1.5) * 0.65) * 0.48 * (1 - rawT * 0.4);
         }
       } else {
         if (!w.pouringFinished) {
           w.pouringFinished = true;
-          // Final settling ring pulse
-          injectSplash(w.faceId, 0.45, 3.2);
-          if (stream) {
-            root.remove(stream);
-            stream.material.dispose();
+          injectSplash(w.faceId, 0.28, 3.4);
+          if (fx) {
+            root.remove(fx.streamMesh);
+            fx.streamMesh.material.dispose();
+            root.remove(fx.foamRing);
+            fx.foamRing.material.dispose();
             pourStreams.delete(w.faceId);
           }
         }
 
-        // Long-lived gentle ambient ripples so pools stay shimmeringly alive
+        // Occasional very gentle broad swell so settled pools remain calmly alive
         w.ambientTimer -= clampedDt;
         if (w.ambientTimer <= 0) {
-          w.ambientTimer = 1.8 + Math.random() * 2.8;
-          injectSplash(w.faceId, (Math.random() - 0.5) * 0.12, 2.2);
+          w.ambientTimer = 2.6 + Math.random() * 3.4;
+          injectSplash(w.faceId, (Math.random() - 0.5) * 0.045, 3.0);
         }
       }
     }
 
-    // Update splash droplets
     for (let i = droplets.length - 1; i >= 0; i--) {
       const d = droplets[i];
       d.life += clampedDt;
-      d.vy -= 26.0 * clampedDt;
+      d.vy -= 24.0 * clampedDt;
       d.mesh.position.x += d.vx * clampedDt;
       d.mesh.position.y += d.vy * clampedDt;
       d.mesh.position.z += d.vz * clampedDt;
-      if (d.mesh.position.y <= d.floorY || d.life > 1.0) {
+      if (d.mesh.position.y <= d.floorY || d.life > 0.9) {
         root.remove(d.mesh);
         d.mesh.material.dispose();
         droplets.splice(i, 1);
       }
     }
 
-    // Step 2D wave simulation at steady 60Hz rate (2 substeps per step)
     if (activeWells.size > 0) {
       physicsAccum += clampedDt;
       const stepDt = 1 / 60;

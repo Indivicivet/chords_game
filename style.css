@@ -182,14 +182,18 @@ body {
   background: rgba(18, 24, 36, 0.92);
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 20px;
-  padding: 26px 26px 22px;
+  padding: 24px 24px 22px;
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
 }
 
+.setup-card {
+  max-width: 520px;
+}
+
 .modal-card h1 {
-  font-size: 1.65rem;
+  font-size: 1.5rem;
   letter-spacing: -0.02em;
-  margin-bottom: 6px;
+  margin-bottom: 16px;
 }
 
 .modal-card h2 {
@@ -207,8 +211,8 @@ body {
 .seat-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin-bottom: 22px;
+  gap: 8px;
+  margin-bottom: 18px;
 }
 
 .seat-row {
@@ -216,10 +220,14 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px 12px;
+  padding: 8px 10px 8px 12px;
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.seat-row.disabled {
+  opacity: 0.68;
 }
 
 .seat-label {
@@ -227,17 +235,61 @@ body {
   align-items: center;
   gap: 9px;
   font-weight: 600;
-  font-size: 0.92rem;
+  font-size: 0.9rem;
+  min-width: 96px;
 }
 
-.seat-select {
-  background: rgba(12, 16, 26, 0.85);
-  color: var(--text-main);
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  border-radius: 8px;
+.seg-group {
+  display: inline-flex;
+  background: rgba(10, 14, 22, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 9px;
+  padding: 3px;
+  gap: 3px;
+}
+
+.seg-btn {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid transparent;
+  border-radius: 6px;
   padding: 6px 10px;
-  font-size: 0.86rem;
+  font-size: 0.8rem;
+  font-weight: 500;
   cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
+}
+
+.seg-btn:hover:not(.active) {
+  color: var(--text-main);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.seg-btn.active {
+  color: #ffffff;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.14);
+  border-color: var(--seat-color, rgba(255, 255, 255, 0.45));
+  box-shadow: 0 0 10px color-mix(in srgb, var(--seat-color, #ffffff) 32%, transparent);
+}
+
+@media (max-width: 540px) {
+  .seat-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .seg-group {
+    width: 100%;
+  }
+
+  .seg-btn {
+    flex: 1;
+    text-align: center;
+    padding: 6px 6px;
+  }
 }
 
 .modal-footer {
