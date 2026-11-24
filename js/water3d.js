@@ -74,12 +74,15 @@ const WATER_FRAGMENT_SHADER = /* glsl */ `
     float hD = sampleHeightBilinear(vWorldPos.xz - vec2(0.0, eps));
     float hU = sampleHeightBilinear(vWorldPos.xz + vec2(0.0, eps));
 
-    // Gentle, broad low-frequency breeze swell so settled water stays softly alive
-    float breeze = sin(vWorldPos.x * 0.36 + uTime * 1.15) * cos(vWorldPos.z * 0.42 - uTime * 0.9);
-    float dBreezeX = cos(vWorldPos.x * 0.36 + uTime * 1.15) * cos(vWorldPos.z * 0.42 - uTime * 0.9) * 0.36 * 0.018;
-    float dBreezeZ = -sin(vWorldPos.x * 0.36 + uTime * 1.15) * sin(vWorldPos.z * 0.42 - uTime * 0.9) * 0.42 * 0.018;
+    // Smooth living ripples + gentle capillary surface shimmer
+    float breeze = sin(vWorldPos.x * 0.65 + uTime * 1.9) * cos(vWorldPos.z * 0.72 - uTime * 1.5);
+    float breeze2 = sin((vWorldPos.x - vWorldPos.z) * 0.95 + uTime * 2.3);
+    float dBreezeX = (cos(vWorldPos.x * 0.65 + uTime * 1.9) * cos(vWorldPos.z * 0.72 - uTime * 1.5) * 0.65
+                    + cos((vWorldPos.x - vWorldPos.z) * 0.95 + uTime * 2.3) * 0.95) * 0.026;
+    float dBreezeZ = (-sin(vWorldPos.x * 0.65 + uTime * 1.9) * sin(vWorldPos.z * 0.72 - uTime * 1.5) * 0.72
+                    - cos((vWorldPos.x - vWorldPos.z) * 0.95 + uTime * 2.3) * 0.95) * 0.026;
 
-    float waveGain = 2.15;
+    float waveGain = 4.2;
     float dx = (hR - hL) * waveGain + dBreezeX;
     float dz = (hU - hD) * waveGain + dBreezeZ;
     vec3 N = normalize(vec3(-dx, 1.0, -dz));
@@ -88,27 +91,28 @@ const WATER_FRAGMENT_SHADER = /* glsl */ `
     vec3 R = reflect(-V, N);
 
     vec3 skyRefl = sampleSky(R);
-    // Keep sky reflection luminance & clouds crisp without overpowering player hue
+    // Keep sky reflection clean and mostly bright white/neutral so player water hue stays true to string color
     float skyLum = dot(skyRefl, vec3(0.299, 0.587, 0.114));
-    vec3 balancedSky = mix(vec3(skyLum), skyRefl, 0.38);
+    vec3 whiteSkyRefl = mix(vec3(0.75 + skyLum * 0.25), skyRefl, 0.14);
 
-    vec3 bodyColor = mix(uShallowColor, uDeepColor, clamp(uFillProgress * 0.72, 0.0, 1.0));
-    bodyColor += uShallowColor * (0.5 + 0.5 * breeze) * 0.08;
+    vec3 bodyColor = mix(uShallowColor, uDeepColor, clamp(uFillProgress * 0.55, 0.0, 1.0));
+    bodyColor += uShallowColor * (0.5 + 0.5 * (breeze * 0.6 + breeze2 * 0.4)) * 0.08;
 
-    float fresnel = 0.06 + 0.50 * pow(1.0 - max(dot(N, V), 0.0), 4.0);
-    vec3 reflTint = balancedSky * mix(vec3(1.0), uShallowColor * 1.15, 0.36);
-    vec3 color = mix(bodyColor, reflTint, fresnel);
+    float fresnel = 0.05 + 0.48 * pow(1.0 - max(dot(N, V), 0.0), 3.6);
+    vec3 color = mix(bodyColor, whiteSkyRefl, fresnel);
 
-    // Crisp sun specular sparkles + soft sheen
+    // Crisp sun specular sparkles + broad sheen on ripple crests
     vec3 L = normalize(uSunDir);
     vec3 H = normalize(L + V);
     float ndoth = max(dot(N, H), 0.0);
-    float specTight = pow(ndoth, 240.0) * 2.6;
-    float specMid = pow(ndoth, 40.0) * 0.28;
-    color += vec3(1.0, 0.98, 0.93) * (specTight + specMid);
+    float specTight = pow(ndoth, 180.0) * 2.8;
+    float specMid = pow(ndoth, 34.0) * 0.34;
+    color += vec3(1.0, 0.99, 0.96) * (specTight + specMid);
 
-    float alpha = mix(0.70, 0.90, clamp(uFillProgress, 0.0, 1.0));
+    float alpha = mix(0.74, 0.92, clamp(uFillProgress, 0.0, 1.0));
     gl_FragColor = vec4(color, alpha);
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
   }
 `;
 
@@ -161,6 +165,8 @@ const WATERFALL_FRAGMENT_SHADER = /* glsl */ `
     float alpha = topFade * endFade * headReveal * (0.68 + 0.22 * foam);
 
     gl_FragColor = vec4(color, alpha);
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
   }
 `;
 
@@ -556,10 +562,10 @@ export function createWaterSystem(board, skyEquirectTex, sunDir) {
   }
 
   function stepWavePhysics() {
-    const c2 = 0.2;
-    const scalarDamping = 0.989;
-    // Physical Navier-Stokes viscous term: damps high-frequency spatial waves ~ k^2
-    const viscosity = 0.085;
+    const c2 = 0.22;
+    const scalarDamping = 0.9978;
+    // Light viscosity kills jagged 1-cell Nyquist ringing while keeping smooth waves lively
+    const viscosity = 0.014;
 
     for (const w of activeWells.values()) {
       if (!w.pouringStarted) continue;
@@ -635,7 +641,7 @@ export function createWaterSystem(board, skyEquirectTex, sunDir) {
       if (!w.pouringStarted) {
         w.pouringStarted = true;
         w.mesh.visible = true;
-        injectSplash(w.faceId, 0.42, 3.0);
+        injectSplash(w.faceId, 0.55, 3.2);
       }
 
       const elapsed = simTime - w.startAt;
@@ -649,9 +655,9 @@ export function createWaterSystem(board, skyEquirectTex, sunDir) {
 
       const fx = pourStreams.get(w.faceId);
       if (rawT < 1) {
-        // Broad smooth splash disturbance while pouring
-        const pulse = Math.sin(simTime * 15.0 + w.faceId) * 0.14 + 0.09;
-        injectSplash(w.faceId, pulse * clampedDt * 18.0, 2.8);
+        // Lively concentric splash waves during pour
+        const pulse = Math.sin(simTime * 18.0 + w.faceId) * 0.24 + 0.14;
+        injectSplash(w.faceId, pulse * clampedDt * 22.0, 3.0);
 
         w.dropletTimer += clampedDt;
         if (w.dropletTimer > 0.11) {
@@ -674,7 +680,7 @@ export function createWaterSystem(board, skyEquirectTex, sunDir) {
       } else {
         if (!w.pouringFinished) {
           w.pouringFinished = true;
-          injectSplash(w.faceId, 0.28, 3.4);
+          injectSplash(w.faceId, 0.45, 3.5);
           if (fx) {
             root.remove(fx.streamMesh);
             fx.streamMesh.material.dispose();
@@ -684,11 +690,11 @@ export function createWaterSystem(board, skyEquirectTex, sunDir) {
           }
         }
 
-        // Occasional very gentle broad swell so settled pools remain calmly alive
+        // Gentle ongoing ripple rings so filled pools visibly shimmer & move
         w.ambientTimer -= clampedDt;
         if (w.ambientTimer <= 0) {
-          w.ambientTimer = 2.6 + Math.random() * 3.4;
-          injectSplash(w.faceId, (Math.random() - 0.5) * 0.045, 3.0);
+          w.ambientTimer = 1.2 + Math.random() * 1.6;
+          injectSplash(w.faceId, (Math.random() > 0.5 ? 1 : -1) * (0.08 + Math.random() * 0.06), 3.0);
         }
       }
     }
