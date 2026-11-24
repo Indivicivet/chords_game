@@ -65,6 +65,7 @@ export function createGameState(board, seatConfigs) {
     currentTurnIdx: 0,
     consecutivePasses: 0,
     gameOver: false,
+    autoEndedNoScoringMoves: false,
     lastEventText: "",
     history: [],
   };
@@ -108,12 +109,11 @@ export function getLegalChords(state, playerSlot) {
 }
 
 /**
- * Pure simulation of which unclaimed faces become claimed if `playerSlot` places `chordId`.
+ * Finds all unclaimed faces currently enclosed by `playerSlot` strings in `nextChords`
+ * with no opponent strings or opponent-claimed faces inside.
  */
-export function simulateClaim(board, chordOwners, faceOwners, chordId, playerSlot) {
+function findClaimableFaces(board, nextChords, faceOwners, playerSlot) {
   const nFaces = board.faces.length;
-  const nextChords = chordOwners.slice();
-  nextChords[chordId] = playerSlot;
 
   // 1. Flood-fill from outside the octagon across edges lacking playerSlot's string
   const outside = new Uint8Array(nFaces);
@@ -196,6 +196,36 @@ export function simulateClaim(board, chordOwners, faceOwners, chordId, playerSlo
   return newlyClaimed;
 }
 
+/**
+ * Pure simulation of which unclaimed faces become claimed if `playerSlot` places `chordId`.
+ */
+export function simulateClaim(board, chordOwners, faceOwners, chordId, playerSlot) {
+  const nextChords = chordOwners.slice();
+  nextChords[chordId] = playerSlot;
+  return findClaimableFaces(board, nextChords, faceOwners, playerSlot);
+}
+
+/**
+ * Returns true if `playerSlot` could still possibly enclose and score at least one
+ * unclaimed face using any subset of its currently legal chords.
+ */
+export function canPlayerScore(state, playerSlot) {
+  const maxChords = state.chordOwners.slice();
+  let hasLegal = false;
+  for (let cId = 0; cId < state.board.chords.length; cId++) {
+    if (getChordValidity(state, cId, playerSlot).valid) {
+      maxChords[cId] = playerSlot;
+      hasLegal = true;
+    }
+  }
+  if (!hasLegal) return false;
+  return findClaimableFaces(state.board, maxChords, state.faceOwners, playerSlot).length > 0;
+}
+
+export function canAnyPlayerScore(state) {
+  return state.players.some((p) => canPlayerScore(state, p.slot));
+}
+
 function snapshotState(state) {
   return {
     chordOwners: state.chordOwners.slice(),
@@ -207,6 +237,7 @@ function snapshotState(state) {
     currentTurnIdx: state.currentTurnIdx,
     consecutivePasses: state.consecutivePasses,
     gameOver: state.gameOver,
+    autoEndedNoScoringMoves: state.autoEndedNoScoringMoves,
     lastEventText: state.lastEventText,
   };
 }
@@ -242,6 +273,20 @@ export function applyMove(state, chordId) {
       ? `${player.label} claimed ${claimed.length} section${claimed.length > 1 ? "s" : ""}`
       : `${player.label} placed a string`;
 
+  if (!canAnyPlayerScore(state)) {
+    state.gameOver = true;
+    state.autoEndedNoScoringMoves = true;
+    state.lastEventText = "No scoring moves remain for any player";
+    return {
+      playerSlot: player.slot,
+      chordId,
+      claimedFaces: claimed,
+      passes: [],
+      autoEnded: true,
+      gameOver: true,
+    };
+  }
+
   const passInfo = advanceTurnAndCheckPasses(state);
 
   return {
@@ -249,6 +294,7 @@ export function applyMove(state, chordId) {
     chordId,
     claimedFaces: claimed,
     passes: passInfo.passes,
+    autoEnded: false,
     gameOver: state.gameOver,
   };
 }
@@ -286,6 +332,7 @@ export function undoLastMove(state) {
   state.currentTurnIdx = prev.currentTurnIdx;
   state.consecutivePasses = prev.consecutivePasses;
   state.gameOver = prev.gameOver;
+  state.autoEndedNoScoringMoves = prev.autoEndedNoScoringMoves;
   state.lastEventText = "Undid last move";
   return true;
 }

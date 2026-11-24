@@ -248,13 +248,14 @@ function showGameOverModal() {
   const topArea = scores[0].area;
   const tiedTop = scores.filter((s) => s.segments === topSegs);
 
+  const endReason = gameState.autoEndedNoScoringMoves ? " No scoring moves remain." : "";
   if (tiedTop.length === 1) {
     winnerTitle.textContent = `${tiedTop[0].player.label} Wins!`;
-    winnerSubtitle.textContent = `Claimed ${topSegs} stone well${topSegs === 1 ? "" : "s"}.`;
+    winnerSubtitle.textContent = `Claimed ${topSegs} stone well${topSegs === 1 ? "" : "s"}.${endReason}`;
   } else {
     const names = tiedTop.map((t) => t.player.label).join(" & ");
     winnerTitle.textContent = `Tie: ${names}`;
-    winnerSubtitle.textContent = `Both claimed ${topSegs} stone wells (sorted by total area).`;
+    winnerSubtitle.textContent = `Both claimed ${topSegs} stone wells (sorted by total area).${endReason}`;
   }
 
   finalStandings.innerHTML = "";
@@ -370,7 +371,9 @@ function executeChordMove(chordId) {
   updateHUD();
   refreshInteractivePreviews();
 
-  if (result.passes.length > 0 && !result.gameOver) {
+  if (result.autoEnded) {
+    setStatus("No scoring moves remain for any player — game ended!");
+  } else if (result.passes.length > 0 && !result.gameOver) {
     const names = result.passes.map((p) => p.label).join(", ");
     setStatus(`${names} had no legal move and passed`);
   } else if (result.claimedFaces.length > 0) {
