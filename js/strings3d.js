@@ -7,6 +7,7 @@ const STRING_RADIUS = 0.54;
 const GROOVE_Y = SCAD.BASE_H + 1.82; // 4.82 inside the 3.0..6.5 channel
 const PEG_ANCHOR_Y = SCAD.BASE_H + 2.45; // 5.45 wrapped on peg shaft
 const ARCH_HALF_WIDTH = 3.6;
+const PEG_BLEND_LEN = 5.2;
 
 export function createStrings3D(board) {
   const root = new THREE.Group();
@@ -63,25 +64,27 @@ export function createStrings3D(board) {
       });
     }
 
+    // Keep string centered along the exact chord line (radius BOARD_R) across all stone grooves,
+    // blending onto the inward-set anchor pegs only inside the open hub clearing near each vertex.
+    const cA = toWorldXZ(chord.pA);
+    const cB = toWorldXZ(chord.pB);
     const rPeg = SCAD.BOARD_R - 1.35;
-    const pA2D = {
+    const wA = toWorldXZ({
       x: Math.cos(board.vertices[chord.vA].angle) * rPeg,
       y: Math.sin(board.vertices[chord.vA].angle) * rPeg,
-    };
-    const pB2D = {
+    });
+    const wB = toWorldXZ({
       x: Math.cos(board.vertices[chord.vB].angle) * rPeg,
       y: Math.sin(board.vertices[chord.vB].angle) * rPeg,
-    };
-    const wA = toWorldXZ(pA2D);
-    const wB = toWorldXZ(pB2D);
-    const spanLen = Math.hypot(wB.x - wA.x, wB.z - wA.z);
+    });
+    const spanLen = chord.length;
 
     function evalY(t) {
-      const s = t * chord.length;
-      // Taper gently upward near the two anchor pegs
-      const endDist = Math.min(s, chord.length - s);
-      const pegBlend = endDist < 3.6 ? 0.5 * (1 + Math.cos((Math.PI * endDist) / 3.6)) : 0;
-      let y = GROOVE_Y + pegBlend * (PEG_ANCHOR_Y - GROOVE_Y);
+      const s = t * spanLen;
+      const endDist = Math.min(s, spanLen - s);
+      const pegBlend =
+        endDist < PEG_BLEND_LEN ? 0.5 * (1 + Math.cos((Math.PI * endDist) / PEG_BLEND_LEN)) : 0;
+      const y = GROOVE_Y + pegBlend * (PEG_ANCHOR_Y - GROOVE_Y);
 
       let maxBump = 0;
       for (const b of bumps) {
@@ -99,8 +102,12 @@ export function createStrings3D(board) {
     const points = [];
     for (let i = 0; i <= sampleCount; i++) {
       const t = i / sampleCount;
-      const x = wA.x + (wB.x - wA.x) * t;
-      const z = wA.z + (wB.z - wA.z) * t;
+      const s = t * spanLen;
+      const blendA = s < PEG_BLEND_LEN ? 0.5 * (1 + Math.cos((Math.PI * s) / PEG_BLEND_LEN)) : 0;
+      const rem = spanLen - s;
+      const blendB = rem < PEG_BLEND_LEN ? 0.5 * (1 + Math.cos((Math.PI * rem) / PEG_BLEND_LEN)) : 0;
+      const x = cA.x + (cB.x - cA.x) * t + blendA * (wA.x - cA.x) + blendB * (wB.x - cB.x);
+      const z = cA.z + (cB.z - cA.z) * t + blendA * (wA.z - cA.z) + blendB * (wB.z - cB.z);
       points.push(new THREE.Vector3(x, evalY(t), z));
     }
 
